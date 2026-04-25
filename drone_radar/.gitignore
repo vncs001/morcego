@@ -1,0 +1,7 @@
+site-packages/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+detections.log
+demo_output.png
