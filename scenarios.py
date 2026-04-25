@@ -19,19 +19,19 @@ CUSTOM_TARGETS = {
     # ── Drones ──────────────────────────────────────────────────────────────
     "drone_hovering": Target(
         label="drone", range_m=60.0, velocity_mps=0.5, rcs_dbsm=-10.0,
-        blade_freq_hz=150.0, blade_amplitude=0.65,
+        blade_freq_hz=150.0, blade_amplitude=0.65, azimuth_deg=0.0,
     ),
     "drone_fast": Target(
         label="drone", range_m=100.0, velocity_mps=30.0, rcs_dbsm=-8.0,
-        blade_freq_hz=200.0, blade_amplitude=0.65,
+        blade_freq_hz=200.0, blade_amplitude=0.65, azimuth_deg=25.0,
     ),
-    "drone_small": Target(                          # nano-drone tipo DJI Mini
+    "drone_small": Target(
         label="drone", range_m=40.0, velocity_mps=5.0, rcs_dbsm=-20.0,
-        blade_freq_hz=250.0, blade_amplitude=0.55,
+        blade_freq_hz=250.0, blade_amplitude=0.55, azimuth_deg=-15.0,
     ),
-    "drone_large": Target(                          # drone de carga, pás lentas
+    "drone_large": Target(
         label="drone", range_m=120.0, velocity_mps=8.0, rcs_dbsm=0.0,
-        blade_freq_hz=80.0, blade_amplitude=0.70,
+        blade_freq_hz=80.0, blade_amplitude=0.70, azimuth_deg=40.0,
     ),
 
     # ── Pássaros ────────────────────────────────────────────────────────────

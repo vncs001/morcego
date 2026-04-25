@@ -9,10 +9,11 @@ from feature_extractor import extract
 from classifier import classify
 from tracker import KalmanTracker
 from scenarios import CUSTOM_TARGETS, SCENARIOS
+from display import TerminalDisplay
+from alert import AlertHandler
 
 
 def resolve_targets(args):
-    """Return list of Target objects from CLI args."""
     if args.targets:
         unknown = [t for t in args.targets if t not in CUSTOM_TARGETS]
         if unknown:
@@ -32,63 +33,74 @@ def run(args):
     params = RadarParams()
     sim = FMCWSimulator(params)
     tracker = KalmanTracker(dt=params.chirp_duration * params.num_chirps)
+    alerter = AlertHandler(
+        mode=args.camera,
+        camera_url=args.camera_url,
+        gpio_pin=args.gpio_pin,
+        cooldown_s=args.cooldown,
+    )
 
     target_list = resolve_targets(args)
-
-    print(f"\nCenário: {args.scenario or 'custom'}")
-    print(f"Alvos  : {[t.label + '@' + str(int(t.range_m)) + 'm' for t in target_list]}")
-    print(f"Frames : {args.frames}  SNR: {args.snr} dB\n")
+    scenario_name = args.scenario if not args.targets else "custom"
+    target_names = [t.label + "@" + str(int(t.range_m)) + "m" for t in target_list]
 
     latencies_ms = []
     correct = 0
     total = 0
+    active_alerts = []   # posições de drone neste frame
 
-    for frame in range(args.frames):
-        t0 = time.perf_counter()
-        detections = []
-        frame_results = []
+    with TerminalDisplay(scenario_name, target_names) as display:
+        for frame in range(args.frames):
+            t0 = time.perf_counter()
+            detections = []
+            frame_results = []
+            active_alerts = []
 
-        for tgt in target_list:
-            rdm_db, iq_rc = sim.generate_frame([tgt], snr_db=args.snr)
-            feats = extract(rdm_db, iq_rc, params)
-            cls = classify(feats)
+            for tgt in target_list:
+                rdm_db, iq_rc = sim.generate_frame([tgt], snr_db=args.snr)
+                feats = extract(rdm_db, iq_rc, params)
+                cls = classify(feats)
 
-            det_range = (
-                tgt.range_m
-                + tgt.velocity_mps * frame * params.chirp_duration * params.num_chirps
-            )
-            detections.append((det_range, feats.velocity_mps, cls.label))
-            frame_results.append((tgt.label, cls, feats))
+                det_range = (
+                    tgt.range_m
+                    + tgt.velocity_mps * frame * params.chirp_duration * params.num_chirps
+                )
+                detections.append((det_range, feats.velocity_mps, cls.label))
+                frame_results.append((tgt.label, cls, feats, tgt))
 
-        tracker.update(detections)
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        latencies_ms.append(elapsed_ms)
+            tracks = tracker.update(detections)
 
-        print(f"--- Frame {frame:03d}  ({elapsed_ms:.1f} ms) ---")
-        for true_lbl, cls, feats in frame_results:
-            ok = cls.label == true_lbl
-            correct += ok
-            total += 1
-            tag = "OK  " if ok else "MISS"
-            alert = " *** DRONE ***" if cls.label == "drone" else ""
-            print(
-                f"  [{tag}] true={true_lbl:<12s} pred={cls.label:<12s} "
-                f"conf={cls.confidence:.2f}  v={feats.velocity_mps:5.1f}m/s  "
-                f"cv={feats.blade_cv:.3f}{alert}"
-            )
+            # ── aciona câmera para cada drone detectado ───────────────────
+            for true_lbl, cls, feats, tgt in frame_results:
+                correct += cls.label == true_lbl
+                total += 1
 
-    pct = correct / total * 100 if total else 0
-    print(f"\n=== Accuracy: {correct}/{total} = {pct:.1f}% ===")
+                if cls.label == "drone":
+                    # encontra o track correspondente pela proximidade de range
+                    det_range = (
+                        tgt.range_m
+                        + tgt.velocity_mps * frame * params.chirp_duration * params.num_chirps
+                    )
+                    track = min(tracks, key=lambda t: abs(t.range_est - det_range), default=None)
+                    track_id = track.track_id if track else -1
 
-    if args.benchmark:
-        arr = np.array(latencies_ms)
-        scale = 5.0
-        print("\n=== Benchmark ===")
-        print(f"  Mean : {arr.mean():.1f} ms  ({1000/arr.mean():.1f} fps)")
-        print(f"  p95  : {np.percentile(arr, 95):.1f} ms")
-        print(f"  Max  : {arr.max():.1f} ms")
-        print(f"\n  RPi Zero 2 (x{scale:.0f}): {arr.mean()*scale:.1f} ms  "
-              f"({1000/(arr.mean()*scale):.1f} fps)")
+                    pos = alerter.check(
+                        track_id=track_id,
+                        range_m=det_range,
+                        azimuth_deg=tgt.azimuth_deg,
+                        velocity_mps=feats.velocity_mps,
+                        confidence=cls.confidence,
+                    )
+                    if pos:
+                        active_alerts.append(pos)
+
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            latencies_ms.append(elapsed_ms)
+
+            display.update(frame_results, frame, elapsed_ms, correct, total, active_alerts)
+            time.sleep(0.05)
+
+    display.summary(latencies_ms, correct, total, args.benchmark)
 
 
 def main():
@@ -105,16 +117,23 @@ def main():
             "  python main.py --scenario clutter --frames 30\n"
             "  python main.py --targets drone_hovering car_highway bird_fast\n"
             "  python main.py --targets drone_small bird_fast bird_fast --snr 10\n"
+            "  python main.py --scenario all --camera http --camera-url http://192.168.1.50:5000/trigger\n"
+            "  python main.py --scenario all --camera gpio --gpio-pin 17\n"
         ),
     )
-    parser.add_argument("--scenario", default="all",
-                        help="cenário predefinido (ignorado se --targets for usado)")
-    parser.add_argument("--targets", nargs="+", metavar="ALVO",
-                        help="lista livre de alvos (substitui --scenario)")
+    parser.add_argument("--scenario", default="all")
+    parser.add_argument("--targets", nargs="+", metavar="ALVO")
     parser.add_argument("--frames", type=int, default=10)
-    parser.add_argument("--snr", type=float, default=20.0,
-                        help="SNR em dB (default 20). Diminua para simular ruído/chuva")
+    parser.add_argument("--snr", type=float, default=20.0)
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument("--camera", choices=["mock", "http", "gpio"], default="mock",
+                        help="modo de acionamento da câmera (default: mock)")
+    parser.add_argument("--camera-url", default="http://localhost:5000/trigger",
+                        help="URL para modo --camera http")
+    parser.add_argument("--gpio-pin", type=int, default=17,
+                        help="pino BCM para modo --camera gpio (Raspberry Pi)")
+    parser.add_argument("--cooldown", type=float, default=3.0,
+                        help="segundos entre alertas do mesmo drone (default: 3)")
     args = parser.parse_args()
     run(args)
 

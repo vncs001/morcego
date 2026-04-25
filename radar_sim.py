@@ -42,6 +42,7 @@ class Target:
     rcs_dbsm: float
     blade_freq_hz: float = 0.0
     blade_amplitude: float = 0.0
+    azimuth_deg: float = 0.0   # ângulo horizontal em graus (0 = frente, +90 = direita)
 
 
 TARGETS = {
